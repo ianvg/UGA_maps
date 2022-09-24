@@ -1,0 +1,200 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+plot(cars)
+```
+
+```{r}
+library(osmdata)
+library(sf)
+library(ggplot2)
+library(plotly)
+library(rgeos)
+library(tidyverse)
+```
+
+```{r}
+get_overpass_url()
+```
+FYI all osmdata object can be combined using the c() operator. This c() operation can only be performed on simple feature (sf) type geographic features. I.e. you have to use osmdata_sf() to create the simple feature or convert sp type features to sf type features. I think that calling the bbox based on the county perimeter is better. There are some campuses that are not labeled only "University of Georgia" explicity, so it may be best to use st_... methods to get landuse polygons based on the UGA operator key and then use those polygons to filter and select UGA buildings. I could also use the trim_osmdata() function to select from the list of all UGA operated landuse polygons and run through them, one-by-one and obtain a building list that way. I need to use format_out = "polygon" in the getbb() function in order for this to work. There may be some edge-cases (e.g. building is on UGA campus landuse polygon, yet is not a UGA operated building.) that lead me to think that simply adding operator="University of Georgia" to each building is worth the effort.
+
+Pro-tip: value_exact needs to be false in order for match_case to also be false and not fail the query.
+
+```{r}
+bb_county <- getbb('Athens-Clarke County')
+all_Buildings <- opq(bbox = bb_county) %>%
+  add_osm_feature(key = "building") %>%
+  add_osm_feature(key = "operator", value = "University of Georgia", value_exact = FALSE, match_case = FALSE) %>%
+  osmdata_sf()
+```
+
+Nonnecessary ggplotly code below.
+
+```{r}
+p <- ggplot() + geom_sf(data = a$osm_polygons,
+  fill = 'light blue') + theme_minimal()
+
+ggplotly()
+```
+
+```{r}
+ugaCampus <- opq(bbox = bb_county) %>%
+  add_osm_feature(key = "landuse", value = "property") %>%
+  add_osm_feature(key = "name", value = "University of Georgia", value_exact = FALSE, match_case = FALSE) %>%
+  osmdata_sf()
+#Create sf dataset of the UGA campus polygons.
+ugaCampus <- ugaCampus$osm_polygons
+```
+This query allows me to access the multipolygon that comprises the UGA campus.
+I will then use this to create a bbox based on this multipolygon. I need to also
+filter out only the polygons from this multipolygon that are explicitly labeled
+as universities (i.e. amenity = university).
+
+```{r}
+ugaCampus <- ugaCampus %>% filter(amenity == "university")
+```
+
+
+
+
+```{r}
+all_Bicycle_Nodes <- opq(bbox =bb_county) %>%
+  add_osm_feature(key = "amenity", value = "bicycle_parking") %>%
+  osmdata_sf()
+all_Bicycle_Nodes <- all_Bicycle_Nodes$osm_points
+```
+
+Filter only bicycle nodes within the UGA campus.
+
+```{r}
+mat = st_intersects(all_Bicycle_Nodes, ugaCampus, sparse = FALSE)
+
+mat <- apply(mat, 1, any)
+
+all_Bicycle_Nodes_Trimmed <- all_Bicycle_Nodes[mat,]
+```
+
+st_bbox for polygons.
+\
+```{r}
+q <- ggplot() + geom_sf(data = all_bicycle_nodes_untrimmed$osm_points,
+  fill = 'light blue') + theme_minimal()
+
+ggplotly()
+```
+
+
+```{r}
+building_Bike_Combined_Data <- c(all_Bicycle_Nodes_Untrimmed, all_Buildings)
+```
+
+ggplotly interactive map of UGA buildings and bike racks.
+
+```{r}
+q <- ggplot() + geom_sf(data = building_Bike_Combined_Data$osm_points,
+  fill = 'light blue') + theme_minimal() + geom_sf(data = building_Bike_Combined_Data$osm_polygons,
+  fill = 'light blue') + theme_minimal()
+ggplotly()
+```
+
+I will try to create a list by appending the trimmed osmdata from the all_buildings_untrimmed list. The 6th and 8th lists in the osmdata type contain polygons and multipolygons respectively.
+
+append throws an error when I try to append a list of lists with no values. So I will run the trim_osmdata and get six different trim_osmdata function to produce a list of list of lists.
+```{r}
+bb_trim <- getbb('University of Georgia', featuretype = 'University', format_out = "polygon")
+
+#Initial list:
+all_Buildings <- list()
+=
+for(i in 1:length(bb_trim))
+  all_Buildings[1][i] <- trim_osmdata(all_buildings_untrimmed, bb_trim[i])
+```
+b is building c is bike nodes. Think code is only able to do simple polygons at the time. I will need to add multi-polygon ability in the future.
+```{r}
+b <- building_Bike_Combined_Data$osm_polygons
+c <- building_Bike_Combined_Data$osm_points
+```
+
+```{r}
+##  First project data into a planar coordinate system (here UTM zone 32)
+#utmStr <- "+proj=EPSG:2240 +zone=%d +datum=NAD83 +units=ft +no_defs +ellps=WGS84"
+utmStr <- "+proj=EPSG:2240 +zone=%d +datum=WGS84 +units=ft +no_defs +ellps=GRS80"
+crs <- st_crs(2240)
+#utmStr <- "+proj=utm +zone=%d +datum=NAD83 +units=m +no_defs +ellps=GRS80"
+#crs <- CRS(sprintf(utmStr, 32))
+#Perform spatial transform on bike nodes and building polygons\
+
+pUTM <- st_transform(b, crs)
+ptsUTM <- st_transform(c, crs)
+```
+
+
+```{r}
+## Set up containers for results
+n <- nrow(ptsUTM)
+nearestBuilding <- character(n)
+distToNearestBuilding <- numeric(n)
+buildingCapacity <- numeric(n)
+buildingCount <- numeric(n)
+buildingRackType <- character(n)
+buildingRackCovered <- character(n)
+
+```
+
+The st_nearest_feature function may also be really useful here.I think I would like to add a column to the original unprojected simple feature type. 
+```{r}
+## For each point, find name of nearest polygon (in this case, UGA buildings)
+for (i in seq_along(nearestBuilding)) {
+    buildingCapacity <- ptsUTM$capacity[i,]
+    
+    gDists <- st_distance(ptsUTM[i,], pUTM, byid=TRUE)
+    nearestBuilding[i] <- pUTM$name[which.min(gDists)]
+    distToNearestBuilding[i] <- min(gDists)
+}
+```
+
+## For each point, find name of nearest polygon (in this case, UGA buildings)
+for (i in seq_along(nearestBuilding)) {
+    gDists <- st_distance(ptsUTM[i,], pUTM, byid=TRUE)
+    nearestBuilding[i] <- pUTM$name[i]
+    distToNearestBuilding[i] <- min(gDists)
+
+
+```{r}
+## Check that it worked
+nearestDistanceName <- data.frame(nearestBuilding, distToNearestBuilding)
+#       nearestCanton distToNearestCanton
+# 1             Wiltz           15342.222
+# 2        Echternach            7470.728
+# 3            Remich           20520.800
+# 4          Clervaux            6658.167
+# 5        Echternach           22177.771
+# 6          Clervaux           26388.388
+# 7           Redange            8135.764
+# 8            Remich            2199.394
+# 9  Esch-sur-Alzette           11776.534
+# 10           Remich           14998.204
+
+plot(c, pch=16, col="red")
+#text(c, 1:10, pos=3)
+plot(b, add=TRUE)
+text(b, b$name, cex=0.7)
+```
+
+
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
